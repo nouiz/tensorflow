@@ -83,6 +83,14 @@ bool GpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
   }
   auto producer = consumer->operand(operand_index);
 
+  //Disabled by default
+  char* env_var = std::getenv("XLA_FRED_CANCEL_DOWNCAST");
+  if (PostponeFusion(*producer, *consumer) && env_var != nullptr && strcmp(env_var, "0") != 0) {
+    VLOG(3) << "Postpone fusion of: " << producer->ToString()
+            << " into " << consumer->ToString();
+    return false;
+  }
+
   // The following checks are potentially expensive.
   if (FusionWouldBeTooLarge(*consumer, *producer)) {
     return false;

@@ -19,6 +19,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
+#include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/shape.h"
@@ -336,5 +337,122 @@ HloInstruction::FusionKind ChooseFusionKind(const HloInstruction& /*producer*/,
                                   : HloInstruction::FusionKind::kLoop;
 }
 
+bool ShouldFuseProducerConsumerMOF(const HloInstruction& producer, const HloInstruction& consumer) {
+  // TODO(b/136623068): Use IsFusibleAsMultiOutputFusionRoot(...) to lift
+  // the restriction to input-fusible reductions.
+  char* env_var = std::getenv("XLA_FRED_MOF_FUSION");
+  if (IsFusibleAsMultiOutputFusionRoot(consumer) && !IsInputFusibleReduction(consumer)) {
+    // && env_var != nullptr && strcmp(env_var, "1")) {
+    VLOG(0) << "Consumer " << consumer.name()
+            << " is EXPERIMENTAL FUSION.";
+  } else if (!IsInputFusibleReduction(consumer)) {
+    VLOG(3) << "Consumer " << consumer.name()
+            << " is not an input-fusible reduction." << env_var;
+    return false;
+  }
+  if (!IsProducerConsumerMultiOutputFusible(producer, consumer)) {
+    VLOG(3) << producer.name() << " and " << consumer.name()
+            << " are not fusible.";
+    return false;
+  }
+  // Never multi-output fuse constants.  To the extent that we want to fuse
+  // constants, that should be handled by the regular fusion pass.
+  if (producer.opcode() == HloOpcode::kConstant) {
+    VLOG(3) << producer.name() << " is a constant.";
+    return false;
+  }
+
+  if (FusionWouldBeTooLarge(producer, consumer)) {
+    VLOG(3) << producer.name() << " and " << consumer.name()
+            << " would be too large of a fusion.";
+    return false;
+  }
+  return true;
+}
+
+// We want to merge downcast convert into its producer when possible.
+// If this would happen only in the later fusion stage, like in the
+// MOF phase, we need to postpone them in the previous stages.
+bool PostponeFusion(const HloInstruction& producer,
+                    const HloInstruction& consumer) {
+  // Step 1. See if this is a downcast or equivalent operation.
+  bool downcast_try_to_postpone = false;
+  auto is_downcast = [] (const  HloInstruction& instr) {
+    return instr.opcode() == HloOpcode::kConvert &&
+    ShapeUtil::ByteSizeOf(instr.operand(0)->shape()) >
+    ShapeUtil::ByteSizeOf(instr.shape());};
+
+  // It is more efficient to fuse downcast convert in the producer
+  // then the consumer.
+  // Here a downcast convert can be one convert operation
+  // or a fusion with one input and one output that lower the memory output.
+  if (is_downcast(producer)) {
+    // If the consumer is also a downcast, we should merge them early
+    // as this is the equivalent of a bigger downcast.
+    if (is_downcast(consumer) ||
+        (consumer.IsLoopFusion() &&
+         is_downcast(*consumer.fused_instructions_computation()->root_instruction()))) {
+      return false;
+      // A downcast of a parameter can't be merged into its producer.
+    } else if (producer.operand(0)->opcode() == HloOpcode::kParameter) {
+      return false;
+    } else {
+      downcast_try_to_postpone = true;
+    }
+  } else if (producer.IsLoopFusion() &&
+             is_downcast(*producer.fused_instructions_computation()->root_instruction()) &&
+             producer.operands().size() == 1) {
+    downcast_try_to_postpone = true;
+  } else if (producer.IsLoopFusion() && producer.operands().size() == 1) {
+    auto root = producer.fused_instructions_computation()->root_instruction();
+    if (root->opcode() == HloOpcode::kConvert &&
+        ShapeUtil::ByteSizeOf(producer.operand(0)->shape()) >
+        ShapeUtil::ByteSizeOf(producer.shape())) {
+      downcast_try_to_postpone = true;
+    }
+  }
+  if (!downcast_try_to_postpone) {
+    VLOG(4) << "No operation to postpone";
+    return false;
+  }
+
+  // Step 2. See if we have a chance to merge in the future.
+  const HloInstruction* future_producer = producer.operand(0);
+  if (!ShouldFuseProducerConsumerMOF(*future_producer, producer)) {
+      return false;
+  }
+
+  // Check if the future fusion would create a cycle.
+  // Here for simplicity and speed, we do a simple by overly strict check.
+  // If future_producer user's take 0 input or are future_producer, we
+  // are sure their is no cycle.
+  if (future_producer->users().size() > 1) {
+    if (absl::c_any_of(
+            future_producer->users(),
+            [&] (const HloInstruction* user) {
+              return absl::c_any_of(user->operands(),
+                                    [&](const HloInstruction* sub_user) {
+                                      return sub_user->operands().size() > 0 &&
+                                          sub_user != future_producer;});
+            })) {
+      VLOG(3) << "Not postponing " << producer.name()
+              << " into users { "
+              << absl::StrJoin(producer.users(), ", ",
+                               [](string* out, HloInstruction* user) {
+                                 absl::StrAppend(out, user->name());
+                               })
+              << " }"
+              << " future users {"
+              << absl::StrJoin(future_producer->users(), ", ",
+                               [](string* out, HloInstruction* user) {
+                                 absl::StrAppend(out, user->name());
+                               })
+              << " }";
+      return false;
+    }
+  }
+
+  return true;
+}
 }  // namespace gpu
 }  // namespace xla

@@ -1105,6 +1105,9 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   std::unordered_set<string> whitelist;
+  auto vall_ops = XlaOpRegistry::GetAllRegisteredOps();;
+  std::unordered_set<string> all_ops(vall_ops.begin(), vall_ops.end());
+
   for (auto s : absl::StrSplit(flags->tf_xla_supported_nodes, ",")) {
     bool fusible = s == "FUSIBLE";
     bool added = false;
@@ -1174,15 +1177,19 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
                         "ZerosLike", "OnesLike"});
     }
     if (!added && s.size() > 0) {
-      // TODO Assert that this is an existing TF operation?
+      if (all_ops.count(string(s)) == 0) {
+        return errors::InvalidArgument(
+            "The operation '", s,
+            "' passed to --tf_xla_supported_nodes is not supported by XLA.");
+      }
       whitelist.insert(string(s));
     }
   }
 
-  if (VLOG_IS_ON(1) && whitelist.size() > 0) {
+  if (VLOG_IS_ON(2) && whitelist.size() > 0) {
     std::vector<string> vwhitelist(whitelist.begin(), whitelist.end());
     std::sort(vwhitelist.begin(), vwhitelist.end());
-    VLOG(1) << "XLA clustering will only consider the following TF operations: "
+    VLOG(2) << "XLA clustering will only consider the following TF operations: "
             << absl::StrJoin(vwhitelist, " ");
   }
 
@@ -1225,7 +1232,8 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
     // Why this get printed when XLA is disabled?
     if (whitelist.size() > 0 && whitelist.count(node->def().op()) != 1) {
-      VLOG(1) << "Rejecting " << node->name() << " as is was not whitelisted.";
+      VLOG(1) << "Rejecting " << node->name()
+              << " as is was not listed in --tf_xla_supported_nodes.";
       continue;
     }
 

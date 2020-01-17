@@ -56,5 +56,13 @@ void GpuCodegenTest::CompileAndVerifyPtx(
   EXPECT_TRUE(filecheck_result.ValueOrDie());
 }
 
+void GpuCodegenTest::CompileAndVerifyPtx(const string& hlo_text,
+					 absl::string_view pattern) {
+  HloModuleConfig config;
+  config.set_debug_options(GetDebugOptionsForTest());
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_text, config));
+  CompileAndVerifyPtx(std::move(module), pattern);
+}
 }  // namespace gpu
 }  // namespace xla

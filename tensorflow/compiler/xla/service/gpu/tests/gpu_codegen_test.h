@@ -36,6 +36,8 @@ class GpuCodegenTest : public LlvmIrGenTestBase {
   // FileCheck pattern.  (See http://llvm.org/docs/CommandGuide/FileCheck.html).
   void CompileAndVerifyPtx(std::unique_ptr<VerifiedHloModule> hlo_module,
                            absl::string_view pattern);
+  void CompileAndVerifyPtx(const string& hlo_text,
+                           absl::string_view pattern);
 };
 
 }  // namespace gpu

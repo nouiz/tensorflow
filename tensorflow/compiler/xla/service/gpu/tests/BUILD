@@ -218,6 +218,17 @@ tf_cc_test(
 )
 
 tf_cc_test(
+    name = "gpu_elementwise_test",
+    srcs = ["gpu_elementwise_test.cc"],
+    tags = tf_cuda_tests_tags(),
+    deps = [
+        ":gpu_codegen_test",
+        "//tensorflow/compiler/xla/tests:verified_hlo_module",
+        "//tensorflow/core:test_main",
+    ],
+)
+
+tf_cc_test(
     name = "gpu_index_test",
     srcs = ["gpu_index_test.cc"],
     tags = tf_cuda_tests_tags(),

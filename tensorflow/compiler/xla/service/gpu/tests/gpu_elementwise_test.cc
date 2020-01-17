@@ -27,13 +27,64 @@ namespace {
 
 class GpuElementwiseTest : public GpuCodegenTest {};
 
-TEST_F(GpuElementwiseTest, ExpElementwise) {
+TEST_F(GpuElementwiseTest, ExpSine) {
     const char* hlo_string = R"(
 HloModule vec
 
 ENTRY %computation (arg0: f32[16000000]) -> f32[16000000] {
   %arg0 = f32[16000000] parameter(0), parameter_replication={false}
   ROOT %out = f32[16000000] sine(arg0)
+}
+)";
+
+    CompileAndVerifyPtx(hlo_string, R"(
+    CHECK: ld.global.nc.f32
+    CHECK-NOT: ld.global.nc.f32
+  )");
+}
+
+TEST_F(GpuElementwiseTest, ExpCosine) {
+    const char* hlo_string = R"(
+HloModule vec
+
+ENTRY %computation (arg0: f32[16000000]) -> f32[16000000] {
+  %arg0 = f32[16000000] parameter(0), parameter_replication={false}
+  ROOT %out = f32[16000000] cosine(arg0)
+}
+)";
+
+    CompileAndVerifyPtx(hlo_string, R"(
+    CHECK: ld.global.nc.f32
+    CHECK-NOT: ld.global.nc.f32
+  )");
+}
+
+
+TEST_F(GpuElementwiseTest, ExpPower) {
+    const char* hlo_string = R"(
+HloModule vec
+
+ENTRY %computation (arg0: f32[16000000], arg1: f32[16000000]) -> f32[16000000] {
+  %arg0 = f32[16000000] parameter(0), parameter_replication={false}
+  %arg1 = f32[16000000] parameter(1), parameter_replication={false}
+  ROOT %out = f32[16000000] power(arg0, arg1)
+}
+)";
+
+    CompileAndVerifyPtx(hlo_string, R"(
+    CHECK: ld.global.nc.f32
+    CHECK-NOT: ld.global.nc.f32
+  )");
+}
+
+
+TEST_F(GpuElementwiseTest, ExpAtan2) {
+    const char* hlo_string = R"(
+HloModule vec
+
+ENTRY %computation (arg0: f32[16000000]) -> f32[16000000] {
+  %arg0 = f32[16000000] parameter(0), parameter_replication={false}
+  ROOT %out = f32[16000000] atan2(arg0, arg0)
 }
 )";
 

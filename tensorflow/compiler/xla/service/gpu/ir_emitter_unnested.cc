@@ -2996,9 +2996,15 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
     reduction_tiling[2] *= 2;
   }
 
+  int cc_major = 0, cc_minor = 0;
+  ir_emitter_context_->device_description().cuda_compute_capability(
+      &cc_major, &cc_minor);
   int64 num_threads_y = 1;
   int64 num_threads_x = [&] {
     if (reduction_dimensions.is_row_reduction) {
+      if (cc_major >= 7) {
+        return kWarpSize * 4;
+      }
       return kWarpSize;
     }
     return std::min(

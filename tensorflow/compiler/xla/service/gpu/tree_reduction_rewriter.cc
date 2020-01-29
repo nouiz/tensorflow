@@ -66,7 +66,7 @@ class ReductionRewriterVisitor : public DfsHloRewriteVisitor {
     VLOG(3) << "Input shape: " << input_shape.ToString();
 
     std::array<int64, 3> reduction_tiling =
-        GetReductionTiling(reduction_dimensions);
+        GetReductionTiling(reduction_dimensions, nullptr);
 
     int64 batched_atomic_free_bound = reduction_tiling[0];
     bool reduce_batch_dimension = hlo->dimensions().size() > 1;

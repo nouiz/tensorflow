@@ -3002,7 +3002,8 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
   int64 num_threads_y = 1;
   int64 num_threads_x = [&] {
     if (reduction_dimensions.is_row_reduction) {
-      if (cc_major >= 7) {
+      if (cc_major >= 6 && smallest_input_dtype_bits <= 16) {
+        //TODO test with int8
         return kWarpSize * 4;
       }
       return kWarpSize;

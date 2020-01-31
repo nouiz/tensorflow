@@ -3103,7 +3103,7 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
       int cc_major = 0, cc_minor = 0;
       ir_emitter_context_->device_description().cuda_compute_capability(
           &cc_major, &cc_minor);
-      if (cc_major >= 7) {
+      if (cc_major >= 6 && smallest_input_dtype_bits <= 16) {
         return num_threads_x = kWarpSize * 4;
       }
       return std::min(

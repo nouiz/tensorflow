@@ -2997,12 +2997,14 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
   }
 
   int cc_major = 0, cc_minor = 0;
-  ir_emitter_context_->device_description().cuda_compute_capability(
-      &cc_major, &cc_minor);
+  ir_emitter_context_->device_description().cuda_compute_capability(&cc_major,
+                                                                    &cc_minor);
   int64 num_threads_y = 1;
   int64 num_threads_x = [&] {
     if (reduction_dimensions.is_row_reduction) {
-      if (cc_major >= 6 && smallest_input_dtype_bits <=16) {
+      // Recent NVGPUs need more concurrent IO to fill the full
+      // bandwidth at low bit width. Only bigger bloc allows this.
+      if (cc_major >= 6 && smallest_input_dtype_bits <= 16) {
         return kWarpSize * 4;
       }
       return kWarpSize;

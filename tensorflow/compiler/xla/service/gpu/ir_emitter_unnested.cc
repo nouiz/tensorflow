@@ -3103,6 +3103,14 @@ ReductionCodegenInfo IrEmitterUnnested::ComputeReductionCodegenInfo(
       int cc_major = 0, cc_minor = 0;
       ir_emitter_context_->device_description().cuda_compute_capability(
           &cc_major, &cc_minor);
+      int64 num_threads_x = kWarpSize;
+      char * env = getenv("RED_SCALING");
+      int64 scal = 1;
+      if (env) {
+        scal = atoi(env);
+        VLOG(0) << "RED_SCALING " << scal;
+        return kWarpSize * scal;
+      }
       if (cc_major >= 6 && smallest_input_dtype_bits <= 16) {
         return num_threads_x = kWarpSize * 4;
       }

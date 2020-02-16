@@ -138,19 +138,19 @@ std::array<int64, 3> GetReductionTiling(
     }
     if (reduction_dimensions.dimensions[2] % (kWarpSize * kWarpSize * 64) ==
         0) {
-      char* env = getenv("MULTIPLE_2048");
-      int64 mul_2048_val = 64;
+      char* env = getenv("MULTIPLE_65536");
+      int64 mul_65536_val = 64;
       if(env) {
-        mul_2048_val = atoi(env);
-        VLOG(0) << "Force MULTIPLE_2048 to " << mul_2048_val;
+        mul_65536_val = atoi(env);
+        VLOG(0) << "Force MULTIPLE_65536 to " << mul_65536_val;
       }
-      return {tile_z, 1, mul_2048_val};
+      return {tile_z, 1, mul_65536_val};
     }
-    char* env = getenv("MULTIPLE_N2048");
+    char* env = getenv("MULTIPLE_n65536");
     if(env) {
-      int mul_n2048_val = atoi(env);
-      VLOG(0) << "Force MULTIPLE_N2048 to " << mul_n2048_val;
-      return {tile_z, 1, mul_n2048_val};
+      int mul_n65536_val = atoi(env);
+      VLOG(0) << "Force MULTIPLE_n65536 to " << mul_n65536_val;
+      return {tile_z, 1, mul_n65536_val};
     }
     int cc_major = 0, cc_minor = 0;
     if (device_description != nullptr) {

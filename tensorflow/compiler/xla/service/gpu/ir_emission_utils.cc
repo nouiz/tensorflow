@@ -146,10 +146,10 @@ std::array<int64, 3> GetReductionTiling(
       }
       return {tile_z, 1, mul_65536_val};
     }
-    char* env = getenv("MULTIPLE_n65536");
+    char* env = getenv("MULTIPLE_N65536");
     if(env) {
       int mul_n65536_val = atoi(env);
-      VLOG(0) << "Force MULTIPLE_n65536 to " << mul_n65536_val;
+      VLOG(0) << "Force MULTIPLE_N65536 to " << mul_n65536_val;
       return {tile_z, 1, mul_n65536_val};
     }
     int cc_major = 0, cc_minor = 0;

@@ -44,11 +44,13 @@ class HloPassFix : public Pass {
     while (changed_this_iteration) {
       TF_ASSIGN_OR_RETURN(changed_this_iteration, Pass::Run(module));
       changed |= changed_this_iteration;
-      VLOG(3) << "changed_this_iteration: " << changed_this_iteration;
+      VLOG(3) << Pass::name() << " iteration " << iteration_count
+	      << " changed_this_iteration: " << changed_this_iteration;
       ++iteration_count;
       if (iteration_count == limit) {
         LOG(ERROR)
-            << "Unexpectedly high number of iterations in HLO passes ("
+            << "Unexpectedly high number of iterations in HLO passes "
+	    << Pass::name() << " ("
             << iteration_count
             << ")\nIf compilation hangs here, please file a bug with XLA.";
       }

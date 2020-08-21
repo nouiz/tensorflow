@@ -80,7 +80,7 @@ bool GpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
   auto producer = consumer->operand(operand_index);
 
   // The following checks are potentially expensive.
-  if (FusionWouldBeTooLarge(*consumer, *producer, false)) {
+  if (FusionWouldBeTooLarge(*consumer, *producer, true)) {
     return false;
   }
   // Also check that our emitter can handle the fusion node. We currently can

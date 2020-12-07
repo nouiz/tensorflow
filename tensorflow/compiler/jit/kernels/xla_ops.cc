@@ -272,12 +272,24 @@ static Status CompileToLocalExecutable(
     absl::Span<const int> constants, bool async, bool lazy,
     xla::LocalClient** client, std::map<int, OptionalTensor>* variables,
     const XlaCompiler::CompilationResult** kernel,
-    xla::LocalExecutable** executable) {
+    xla::LocalExecutable** executable,
+    std::vector<VariableInfo>& variable_infos_cache) {
   // We store information about the JIT-compiled XLA computation
   // in the ResourceMgr.
   ResourceMgr* rm = ctx->resource_manager();
   if (!rm) {
     return errors::Internal("No resource manager.");
+  }
+
+  // Get/Enable the Variable.
+  if (variable_infos_cache.size() == 0 && resources.size() > 0) {
+    TF_RETURN_IF_ERROR(
+        GetVariableInfosFromCtxInputs(ctx, resources, variable_infos_cache));
+  } else {
+    CHECK_EQ(variable_infos_cache.size(), resources.size());
+    for (int i = 0; i < variable_infos_cache.size(); ++i) {
+      variable_infos_cache[i].ref();
+    }
   }
 
   XlaCompilationCache* cache;
@@ -290,8 +302,12 @@ static Status CompileToLocalExecutable(
   // free it sooner because the ResourceMgr will retain a reference, but
   // this is more obviously correct.)
   core::ScopedUnref cache_ref(cache);
-
-  TF_RETURN_IF_ERROR(SnapshotResourceVariables(ctx, resources, variables));
+  TF_RETURN_IF_ERROR(SnapshotResourceVariables(ctx, resources, variables,
+                                               variable_infos_cache));
+  //variable_infos_cache.clear();// this clear fix the crash.
+  for (int i = 0; i < variable_infos_cache.size(); ++i) {
+    variable_infos_cache[i].unlock_unref();
+  }
   *client = static_cast<xla::LocalClient*>(cache->client());
 
   XlaCompiler::Options options;
@@ -347,9 +363,11 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
   std::map<int, OptionalTensor> variables;
 
   {
+    std::vector<VariableInfo> variable_infos_cache;
     Status s = CompileToLocalExecutable(
         ctx, function_, platform_info_, resources_, constants_, /*async=*/false,
-        /*lazy=*/false, &client, &variables, &kernel, &executable);
+        /*lazy=*/false, &client, &variables, &kernel, &executable,
+        variable_infos_cache);
     if (!s.ok() && (platform_info_.device_type().type_string() == DEVICE_CPU ||
                     platform_info_.device_type().type_string() == DEVICE_GPU)) {
       // Suggest auto jit if the failure was with GPU or CPU.
@@ -408,9 +426,11 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
   auto elapsed = env->NowMicros() - start_time;
   VLOG(2) << "Elapsed time: " << elapsed << "us";
 
+  std::vector<VariableInfo> variable_infos_cache;
   OP_REQUIRES_OK(ctx, launch_context.PopulateOutputs(
                           ctx, kernel, run_result.ConsumeValueOrDie(),
-                          /*missing_ctx_input_prefix=*/0));
+                          /*missing_ctx_input_prefix=*/0,
+                          variable_infos_cache));
   VLOG(1) << "Done";
 }
 
@@ -503,9 +523,11 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
       cannot_compile_cluster) {
     executable = nullptr;
   } else {
+    std::vector<tensorflow::VariableInfo> variable_infos_cache;
     Status status = CompileToLocalExecutable(
         ctx, function_, platform_info_, resources_, constants_, async,
-        lazy, &client, &variables, &kernel, &executable);
+        lazy, &client, &variables, &kernel, &executable,
+        variable_infos_cache_);
     if (must_compile_ || async || status.code() != error::UNIMPLEMENTED) {
       OP_REQUIRES_OK(ctx, status);
     }
@@ -634,12 +656,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
         return absl::StrCat("Populate Outputs (", ctx->num_outputs(), ")");
       },
       tensorflow::profiler::TraceMeLevel::kInfo);
-
+  std::vector<tensorflow::VariableInfo> variable_infos_cache;
   OP_REQUIRES_OK(
       ctx,
       launch_context.PopulateOutputs(
           ctx, closure.compilation_result(), run_result.ConsumeValueOrDie(),
-          /*missing_ctx_input_prefix=*/closure.num_constant_args()));
+          /*missing_ctx_input_prefix=*/closure.num_constant_args(),
+          variable_infos_cache_));
+  VLOG(3) << "XlaRunOp::Compute end cache_size = " << variable_infos_cache.size();
 }
 
 XlaMergeOp::XlaMergeOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}

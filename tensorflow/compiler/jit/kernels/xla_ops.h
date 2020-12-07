@@ -149,6 +149,8 @@ class XlaCompileOp : public OpKernel {
   // Indexes of resource inputs
   const std::vector<int> resources_;
 
+  std::vector<VariableInfo> variable_infos_cache_;
+
   const NameAttrList function_;
 
   XlaPlatformInfo platform_info_;
@@ -172,6 +174,7 @@ class XlaRunOp : public OpKernel {
 
  private:
   const XlaPlatformInfo platform_info_;
+  std::vector<VariableInfo> variable_infos_cache_;
 };
 
 class XlaMergeOp : public OpKernel {

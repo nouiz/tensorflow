@@ -40,23 +40,6 @@ struct OptionalTensor {
   Tensor value;          // If present, what is the Tensor's value?
 };
 
-// Takes a snapshot of the values of resource variable arguments, whose indices
-// are specified in `variable_indices` argument. We snapshot tensors that back
-// resource variables since concurrent updates may modify the shape, and it is
-// important that the shapes used for compilation match the true shapes of the
-// buffers.
-//
-// We snapshot the entire set of resource variables as one atomic operation.
-// This models Read->* dependencies between resource variable operations.  See
-// jit/resource_operation_safety_analysis for details.
-//
-// Returns a map of TensorFlow argument index to resource variable. If a
-// resource variable is not initialized, the corresponding OptionalTensor
-// will have its `present` field set to false.
-Status SnapshotResourceVariables(OpKernelContext* ctx,
-                                 absl::Span<const int> variable_indices,
-                                 std::map<int, OptionalTensor>* result);
-
 // Information about the state of a variable passed as input to the _XlaCompile
 // and _XlaRun operators.  Unlocks the resource variable and decrements its
 // refcount on destruction.
@@ -76,16 +59,32 @@ class VariableInfo {
 
   // A pointer to the resource variable.  May be null if this VariableInfo is
   // "empty", i.e. it does not track a resource variable.
-  Var* var() const { return var_; }
+  Var* var() const { CHECK(reference_held_); return var_; }
 
   // Returns true if the resource variable lock was successfully acquired by
   // this thread.
   bool lock_held() const { return lock_held_; }
-  void set_lock_held() { lock_held_ = true; }
+  void lock() { CHECK(!lock_held_); CHECK(has_var()); var()->mu()->lock(); lock_held_ = true;}
+  void unlock() { CHECK(lock_held_); CHECK(has_var()); var()->mu()->unlock(); lock_held_ = false;}
+
+  bool reference_held() const { return reference_held_;}
+  void ref() { CHECK(!reference_held_); CHECK(has_var()); reference_held_ = true; var()->Ref(); }
+  void unref() { CHECK(reference_held_); CHECK(has_var()); var()->Unref(); reference_held_ = false; }
+
+  bool has_var() { return var_ != nullptr;}
+  void unlock_unref() {
+    if (lock_held()) {
+      unlock();
+    }
+    if (has_var() && reference_held()) {
+      unref();
+    }
+  }
 
   ~VariableInfo();
 
  private:
+  bool reference_held_;
   int index_;
   Var* var_;
 
@@ -94,6 +93,28 @@ class VariableInfo {
   // in the VariableInfo destructor.
   bool lock_held_ = false;
 };
+
+// Takes a snapshot of the values of resource variable arguments, whose indices
+// are specified in `variable_indices` argument. We snapshot tensors that back
+// resource variables since concurrent updates may modify the shape, and it is
+// important that the shapes used for compilation match the true shapes of the
+// buffers.
+//
+// We snapshot the entire set of resource variables as one atomic operation.
+// This models Read->* dependencies between resource variable operations.  See
+// jit/resource_operation_safety_analysis for details.
+//
+// Returns a map of TensorFlow argument index to resource variable. If a
+// resource variable is not initialized, the corresponding OptionalTensor
+// will have its `present` field set to false.
+Status SnapshotResourceVariables(OpKernelContext* ctx,
+                                 absl::Span<const int> variable_indices,
+                                 std::map<int, OptionalTensor>* result,
+                                 std::vector<VariableInfo>& variable_infos);
+
+Status GetVariableInfosFromCtxInputs(
+    OpKernelContext* ctx, absl::Span<const int> variable_indices,
+    std::vector<VariableInfo>& result);
 
 // Acquires the mutexes for all the variables in `variables` using a
 // deadlock-safe protocol (acquire the mutexes in increasing-address order).
@@ -152,7 +173,8 @@ class XlaComputationLaunchContext {
   Status PopulateOutputs(OpKernelContext* ctx,
                          const XlaCompiler::CompilationResult* kernel,
                          xla::ScopedShapedBuffer output,
-                         int missing_ctx_input_prefix);
+                         int missing_ctx_input_prefix,
+                         std::vector<VariableInfo>& variable_infos);
 
   // Return the argument list. Only valid after PopulateInputs() has been
   // called.

@@ -51,7 +51,8 @@ const char kPossibleNonVariableResourceHintMessage[] =
     "resource inputs to XLA.";
 }  // anonymous namespace
 
-VariableInfo::VariableInfo(int index, Var* var) : index_(index), var_(var) {}
+VariableInfo::VariableInfo(int index, Var* var) : reference_held_(true),
+                                                  index_(index), var_(var) {}
 VariableInfo::VariableInfo(VariableInfo&& other)
     : index_(other.index_), var_(other.var_), lock_held_(other.lock_held_) {
   other.index_ = -1;
@@ -73,22 +74,24 @@ VariableInfo::~VariableInfo() {
   // Release the variable's lock if we hold it. Ensures that the lock is
   // released even on error.  It does not matter in what order we release the
   // locks.
-  if (var()) {
+  if (has_var()) {
     if (lock_held()) {
       var()->mu()->unlock();
     }
 
     // Unref the variable so it can be released by ResourceManager.
-    var()->Unref();
+    if (reference_held()) {
+      unref();
+    }
   }
 }
 
 // Returns a vector of VaribleInfo instances for the resource variable inputs to
 // the kernel with context `ctx`.  The input indices for the resource variable
 // inputs are in `variable_indices`.
-static Status GetVariableInfosFromCtxInputs(
+Status GetVariableInfosFromCtxInputs(
     OpKernelContext* ctx, absl::Span<const int> variable_indices,
-    std::vector<VariableInfo>* result) {
+    std::vector<VariableInfo>& result) {
   std::vector<const ResourceHandle*> resource_handles;
   absl::c_transform(
       variable_indices, std::back_inserter(resource_handles),
@@ -102,13 +105,13 @@ static Status GetVariableInfosFromCtxInputs(
     return s;
   }
 
-  result->clear();
-  result->reserve(variable_indices.size());
+  result.clear();
+  result.reserve(variable_indices.size());
   for (int i = 0; i < variable_indices.size(); i++) {
     // *Release* the variable because we're going to unref it later in
     // ~VariableInfo.
     Var* variable = variables[i].release();
-    result->emplace_back(variable_indices[i], variable);
+    result.emplace_back(variable_indices[i], variable);
   }
 
   return Status::OK();
@@ -124,22 +127,22 @@ Status LockVariables(absl::Span<VariableInfo> variables) {
   // since we're sorting by pointer value the sort is pretty non-deterministic
   // anyway so we don't bother using std::stable_sort for now.
   absl::c_sort(lock_order, [&](int a, int b) {
-    if (variables[a].var() && variables[b].var()) {
+    if (variables[a].has_var() && variables[b].has_var()) {
       return variables[a].var()->mu() < variables[b].var()->mu();
     }
 
     // Move all the empty VariableInfo instances to the end.
-    return variables[a].var() != nullptr;
+    return variables[a].has_var();
   });
 
   mutex* prev = nullptr;
   for (int i : lock_order) {
-    Var* variable = variables[i].var();
-    if (variable == nullptr) {
+    if (!variables[i].has_var()) {
       // All empty VariableInfo instances are at the end of the order
       // so we're done.
       break;
     }
+    Var* variable = variables[i].var();
     mutex* mu = variable->mu();
     if (prev == mu) {
       // It is an error to pass the same variable handle twice to the same XLA
@@ -151,8 +154,7 @@ Status LockVariables(absl::Span<VariableInfo> variables) {
     }
     VLOG(4) << "Acquiring lock for variable "
             << reinterpret_cast<void*>(variable);
-    mu->lock();
-    variables[i].set_lock_held();
+    variables[i].lock();
     prev = mu;
   }
   VLOG(4) << "Finished acquiring variable locks.";
@@ -161,14 +163,12 @@ Status LockVariables(absl::Span<VariableInfo> variables) {
 
 Status SnapshotResourceVariables(OpKernelContext* ctx,
                                  absl::Span<const int> variable_indices,
-                                 std::map<int, OptionalTensor>* result) {
-  std::vector<VariableInfo> variable_infos;
-  TF_RETURN_IF_ERROR(
-      GetVariableInfosFromCtxInputs(ctx, variable_indices, &variable_infos));
+                                 std::map<int, OptionalTensor>* result,
+                                 std::vector<VariableInfo>& variable_infos) {
   TF_RETURN_IF_ERROR(LockVariables(absl::MakeSpan(variable_infos)));
 
   for (int i = 0; i < variable_indices.size(); i++) {
-    if (variable_infos[i].var()) {
+    if (variable_infos[i].has_var()) {
       OptionalTensor& tensor = (*result)[variable_indices[i]];
       tensor.name = HandleFromInput(ctx, variable_indices[i]).name();
       tensor.present = true;
@@ -249,7 +249,8 @@ void XlaComputationLaunchContext::PopulateInputs(
 
 Status XlaComputationLaunchContext::PopulateOutputs(
     OpKernelContext* ctx, const XlaCompiler::CompilationResult* kernel,
-    ScopedShapedBuffer output, int missing_ctx_input_prefix) {
+    ScopedShapedBuffer output, int missing_ctx_input_prefix,
+    std::vector<VariableInfo>& variable_infos_cache) {
   se::Stream* stream =
       ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
 
@@ -375,35 +376,40 @@ Status XlaComputationLaunchContext::PopulateOutputs(
 
   // Apply variable updates, if any.
   VLOG(2) << "Applying variable updates";
-  std::vector<VariableInfo> variable_infos;
-  variable_infos.reserve(kernel->resource_updates.size());
+  if (variable_infos_cache.size() == 0 && kernel->resource_updates.size() > 0) {
+    variable_infos_cache.reserve(kernel->resource_updates.size());
 
-  for (int i = 0; i < kernel->resource_updates.size(); ++i) {
-    const XlaCompiler::ResourceUpdate& write = kernel->resource_updates[i];
-    int actual_input_index = write.input_index - missing_ctx_input_prefix;
-    if (actual_input_index < 0 || actual_input_index >= ctx->num_inputs()) {
-      return errors::Internal("Invalid input index for variable write.");
+    for (int i = 0; i < kernel->resource_updates.size(); ++i) {
+      const XlaCompiler::ResourceUpdate& write = kernel->resource_updates[i];
+      int actual_input_index = write.input_index - missing_ctx_input_prefix;
+      if (actual_input_index < 0 || actual_input_index >= ctx->num_inputs()) {
+        return errors::Internal("Invalid input index for variable write.");
+      }
+
+      // TODO(b/35625933): tensorflow::Var should contain a PersistentTensor,
+      // not a Tensor.
+      Var* variable = nullptr;
+      TF_RETURN_IF_ERROR(LookupOrCreateResource<Var>(
+          ctx, HandleFromInput(ctx, actual_input_index), &variable,
+          [&write](Var** ptr) {
+            *ptr = new Var(write.type);
+            return Status::OK();
+          }));
+      variable_infos_cache.emplace_back(actual_input_index, variable);
     }
-
-    // TODO(b/35625933): tensorflow::Var should contain a PersistentTensor,
-    // not a Tensor.
-    Var* variable = nullptr;
-    TF_RETURN_IF_ERROR(LookupOrCreateResource<Var>(
-        ctx, HandleFromInput(ctx, actual_input_index), &variable,
-        [&write](Var** ptr) {
-          *ptr = new Var(write.type);
-          return Status::OK();
-        }));
-    variable_infos.emplace_back(actual_input_index, variable);
+  } else {
+    CHECK_EQ(variable_infos_cache.size(), kernel->resource_updates.size());
+    for (int i = 0; i < variable_infos_cache.size(); ++i) {
+      variable_infos_cache[i].ref();
+    }
   }
-
-  TF_RETURN_IF_ERROR(LockVariables(absl::MakeSpan(variable_infos)));
+  TF_RETURN_IF_ERROR(LockVariables(absl::MakeSpan(variable_infos_cache)));
 
   for (int i = 0; i < kernel->resource_updates.size(); ++i) {
     Allocator* allocator = ctx->device()->GetAllocator({});
     const XlaCompiler::ResourceUpdate& write = kernel->resource_updates[i];
 
-    if (variable_infos[i].var()->tensor()->dtype() != write.type) {
+    if (variable_infos_cache[i].var()->tensor()->dtype() != write.type) {
       return errors::Internal("Mismatched type in variable write");
     }
 
@@ -419,16 +425,20 @@ Status XlaComputationLaunchContext::PopulateOutputs(
           xla_tensor->ResetDefinitionEvent(definition_event, stream);
         }
       }
-      *variable_infos[i].var()->tensor() = output_tensor;
+      *variable_infos_cache[i].var()->tensor() = output_tensor;
     } else {
       se::DeviceMemoryBase buffer = output.buffer({output_num});
       output.set_buffer(se::OwningDeviceMemory(), {output_num});
       Tensor output_tensor = XlaTensorBuffer::MakeTensor(
           write.type, write.shape, buffer, allocator);
-      *variable_infos[i].var()->tensor() = output_tensor;
+      *variable_infos_cache[i].var()->tensor() = output_tensor;
     }
     ++output_num;
   }
+  for (int i = 0; i < variable_infos_cache.size(); ++i) {
+    variable_infos_cache[i].unlock_unref();
+  }
+
   return Status::OK();
 }
 

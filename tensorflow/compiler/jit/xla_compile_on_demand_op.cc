@@ -83,9 +83,11 @@ Status XlaCompileOnDemandOp::Run(OpKernelContext* ctx,
       executable->Run(launch_context.arguments(), run_options);
   TF_RETURN_IF_ERROR(run_result.status());
 
+  std::vector<VariableInfo> variable_infos_cache;
   TF_RETURN_IF_ERROR(launch_context.PopulateOutputs(
       ctx, result, run_result.ConsumeValueOrDie(),
-      /*missing_ctx_input_prefix=*/0));
+      /*missing_ctx_input_prefix=*/0,
+      variable_infos_cache));
   return Status::OK();
 }
 
